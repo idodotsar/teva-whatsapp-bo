@@ -1,20 +1,33 @@
 // Teva & Briut — WhatsApp Bot (full flow, with async handling + dedup to avoid loops)
-// Node 22+ (כולל fetch מובנה). שימוש ב-Express + מצבי שיחה בזיכרון.
+// Node 20/22+ (כולל fetch מובנה). שימוש ב-Express + מצבי שיחה בזיכרון.
 
 require('dotenv').config();
 const express = require('express');
 const app = express();
 app.use(express.json());
-app.use(express.json
+
+// --- Health & Home ---
+app.get('/', (req, res) => res.status(200).send('Teva WhatsApp bot - alive'));
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ ok: true, uptime: process.uptime(), ts: Date.now() });
+});
+
 // ====== ENV ======
-const API   = 'https://graph.facebook.com/v19.0/';
-const TOKEN = process.env.WHATSAPP_TOKEN;
-const PHONE = process.env.PHONE_NUMBER_ID;
-const VERIFY= process.env.VERIFY_TOKEN || 'teva_verify_me';
-const PORT  = process.env.PORT || 3000;
-const LEAD_TOKEN = process.env.TEVA_LEAD_TOKEN || '';
+const API    = 'https://graph.facebook.com/v19.0/';
+const TOKEN  = process.env.WHATSAPP_TOKEN;
+const PHONE  = process.env.PHONE_NUMBER_ID;
+const VERIFY = process.env.VERIFY_TOKEN || 'teva_verify_me';
+const PORT   = process.env.PORT || 3000;
+
+const LEAD_TOKEN   = process.env.TEVA_LEAD_TOKEN || '';
 const LOOKUP_TOKEN = process.env.TEVA_LOOKUP_TOKEN || process.env.TEVA_LEAD_TOKEN || '';
 
+// sanity logs (יעזרו בלוגים של Render אם משהו חסר)
+console.log('[ENV] PHONE:', PHONE ? 'OK' : 'MISSING');
+console.log('[ENV] TOKEN:', TOKEN ? 'OK' : 'MISSING');
+console.log('[ENV] VERIFY:', VERIFY);
+console.log('[ENV] LOOKUP_TOKEN:', LOOKUP_TOKEN ? 'OK' : 'MISSING');
+console.log('[ENV] LEAD_TOKEN:', LEAD_TOKEN ? 'OK' : 'MISSING');
 
 // ====== HELPERS ======
 const HDRS = () => ({
@@ -23,63 +36,47 @@ const HDRS = () => ({
 });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// שליחת טקסט (preview_url=true כדי שקישורים יהיו לחיצים עם תצוגה מקדימה)
 async function sendText(to, body, preview = true) {
-  await fetch(`${API}${PHONE}/messages`, {
-    method: 'POST',
-    headers: HDRS(),
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body, preview_url: preview }
-    })
-  });
+  try {
+    await fetch(`${API}${PHONE}/messages`, {
+      method: 'POST',
+      headers: HDRS(),
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body, preview_url: preview }
+      })
+    });
+  } catch (e) {
+    console.error('sendText error:', e);
+  }
 }
 
-// שליחת כפתורי Reply (עד 3)
 async function sendButtons(to, text, buttons) {
-  await fetch(`${API}${PHONE}/messages`, {
-    method: 'POST',
-    headers: HDRS(),
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: {
-        type: 'button',
-        body: { text },
-        action: {
-          buttons: buttons.slice(0, 3).map(b => ({
-            type: 'reply',
-            reply: { id: b.id, title: b.title }
-          }))
+  try {
+    await fetch(`${API}${PHONE}/messages`, {
+      method: 'POST',
+      headers: HDRS(),
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text },
+          action: {
+            buttons: buttons.slice(0, 3).map(b => ({
+              type: 'reply',
+              reply: { id: b.id, title: b.title }
+            }))
+          }
         }
-      }
-    })
-  });
-}
-
-// (אופציונלי) רשימת בחירה – לא חובה כרגע
-async function sendList(to, header, text, rows) {
-  await fetch(`${API}${PHONE}/messages`, {
-    method: 'POST',
-    headers: HDRS(),
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: {
-        type: 'list',
-        header: { type: 'text', text: header },
-        body: { text },
-        action: {
-          button: 'בחר/י',
-          sections: [{ rows: rows.map(r => ({ id: r.id, title: r.title })) }]
-        }
-      }
-    })
-  });
+      })
+    });
+  } catch (e) {
+    console.error('sendButtons error:', e);
+  }
 }
 
 // ====== STATE (לפי משתמש) ======
@@ -233,13 +230,13 @@ async function lookupTrackingByOrder(orderId) {
 
     let data;
     try { data = JSON.parse(text); }
-    catch(e){ console.error('lookup JSON parse error:', text); return null; }
+    catch (e) { console.error('lookup JSON parse error:', text); return null; }
 
-    // מחזירים במבנה שהקוד למעלה מצפה לו
     return {
       first_name: data.billing_first_name || data.greeting_first_name || '',
       tracking_number: data.tracking_number || '',
-      tracking_url: data.tracking_url ||
+      tracking_url:
+        data.tracking_url ||
         (data.tracking_number ? `https://status.ydm.co.il/?shipment_id=${data.tracking_number}` : '')
     };
   } catch (e) {
@@ -247,7 +244,6 @@ async function lookupTrackingByOrder(orderId) {
     return null;
   }
 }
-
 
 async function submitLead(name, phone, topic) {
   try {
@@ -259,7 +255,8 @@ async function submitLead(name, phone, topic) {
       body: JSON.stringify(body)
     });
     return resp.ok;
-  } catch {
+  } catch (e) {
+    console.error('submitLead error:', e);
     return false;
   }
 }
@@ -270,7 +267,6 @@ function seen(id) {
   if (!id) return false;
   if (processed.has(id)) return true;
   processed.set(id, Date.now());
-  // ניקוי אחרי 5 דקות
   setTimeout(() => processed.delete(id), 5 * 60 * 1000).unref?.();
   return false;
 }
@@ -285,7 +281,6 @@ app.get('/webhook', (req, res) => {
 });
 
 // ====== WEBHOOK RECEIVE ======
-// מחזירים 200 מייד ומעבדים ברקע (כדי למנוע Retries ממשושכים)
 app.post('/webhook', (req, res) => {
   res.sendStatus(200);
   handleWebhook(req.body).catch(err => console.error('handleWebhook error:', err));
@@ -295,17 +290,16 @@ async function handleWebhook(body) {
   const entry = body?.entry?.[0];
   const value = entry?.changes?.[0]?.value;
 
-  // מתעניינים רק בהודעות נכנסות (messages), לא ב-statuses
+  // רק הודעות נכנסות (messages), מתעלמים מ-statuses וכו'
   const msg = value?.messages?.[0];
   if (!msg) return;
 
-  // דה-דופליקציה
-  if (seen(msg.id)) return;
+  if (seen(msg.id)) return; // דה־דופליקציה
 
   const from = msg.from;
   const step = getStep(from);
 
-  // 1) כפתורים אינטראקטיביים
+  // אינטראקטיביים (כפתורים/ליסט)
   if (msg.type === 'interactive') {
     const id = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
     switch (id) {
@@ -327,14 +321,14 @@ async function handleWebhook(body) {
     }
   }
 
-  // 2) טקסט חופשי לפי שלב
+  // טקסט חופשי
   const text = (msg.text?.body || '').trim();
 
   switch (step) {
     case 'WAIT_TRACKING': {
       const ok = /^1\d{7,13}$/.test(text); // 8–14 ספרות ומתחיל ב-1
       if (!ok) {
-        await sendText(from, 'המספר לא תקין. אנא הזנ/י מספר מעקב 8–14 ספרות שמתחיל ב־1.');
+        await sendText(from, 'המספר לא תקין. אנא הזן/י מספר מעקב 8–14 ספרות שמתחיל ב־1.');
         return;
       }
       await sendText(
@@ -357,7 +351,7 @@ https://status.ydm.co.il/?shipment_id=${text}`,
       await sendText(from, 'בודקים עבורך… 🔎'); await sleep(600);
       const info = await lookupTrackingByOrder(text);
       if (info && (info.tracking_url || info.tracking_number)) {
-        const tn = info.tracking_number ? `${info.tracking_number}` : '';
+        const tn  = info.tracking_number ? `${info.tracking_number}` : '';
         const url = info.tracking_url || (info.tracking_number ? `https://status.ydm.co.il/?shipment_id=${info.tracking_number}` : '');
         await sendText(
           from,
