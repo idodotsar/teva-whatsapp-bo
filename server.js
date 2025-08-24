@@ -15,7 +15,7 @@ app.use((req, res, next) => {
 // --- Health & Home ---
 app.get('/', (req, res) => res.status(200).send('Teva WhatsApp bot - alive'));
 app.get('/healthz', (req, res) => {
-  res.status(200).json({ ok: true, uptime: process.uptime(), ts: Date.now() });
+  res.status(200).send('OK');   // קצר ופשוט, אין JSON גדול
 });
 
 // ====== ENV ======
