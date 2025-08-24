@@ -5,7 +5,7 @@ require('dotenv').config();
 const express = require('express');
 const app = express();
 app.use(express.json());
-
+app.use(express.json
 // ====== ENV ======
 const API   = 'https://graph.facebook.com/v19.0/';
 const TOKEN = process.env.WHATSAPP_TOKEN;
