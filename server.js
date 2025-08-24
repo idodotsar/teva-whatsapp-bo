@@ -28,7 +28,7 @@ const PORT   = process.env.PORT || 3000;
 const LEAD_TOKEN   = process.env.TEVA_LEAD_TOKEN || '';
 const LOOKUP_TOKEN = process.env.TEVA_LOOKUP_TOKEN || process.env.TEVA_LEAD_TOKEN || '';
 
-// sanity logs (יעזרו בלוגים של Render אם משהו חסר)
+// sanity logs
 console.log('[ENV] PHONE:', PHONE ? 'OK' : 'MISSING');
 console.log('[ENV] TOKEN:', TOKEN ? 'OK' : 'MISSING');
 console.log('[ENV] VERIFY:', VERIFY);
@@ -55,11 +55,8 @@ async function sendText(to, body, preview = true) {
       })
     });
     const txt = await resp.text();
-    if (!resp.ok) {
-      console.error('sendText FAIL', resp.status, txt);
-    } else {
-      console.log('sendText OK', to, body.slice(0, 40).replace(/\n/g,' ') + (body.length>40?'...':''));
-    }
+    if (!resp.ok) console.error('sendText FAIL', resp.status, txt);
+    else console.log('sendText OK', to, body.slice(0, 40).replace(/\n/g,' ') + (body.length>40?'...':''));
   } catch (e) {
     console.error('sendText error:', e);
   }
@@ -87,11 +84,8 @@ async function sendButtons(to, text, buttons) {
       })
     });
     const txt = await resp.text();
-    if (!resp.ok) {
-      console.error('sendButtons FAIL', resp.status, txt);
-    } else {
-      console.log('sendButtons OK', to, buttons.map(b=>b.title).join('|'));
-    }
+    if (!resp.ok) console.error('sendButtons FAIL', resp.status, txt);
+    else console.log('sendButtons OK', to, buttons.map(b=>b.title).join('|'));
   } catch (e) {
     console.error('sendButtons error:', e);
   }
@@ -171,6 +165,30 @@ async function flowAskOrderId(to) {
   setStep(to, 'WAIT_ORDER');
 }
 
+// *** חדש: שאלת ביניים אם יש מספר הזמנה (נכנס אחרי "לא קיבלתי מספר מעקב") ***
+async function flowAskHaveOrderId(to) {
+  await sendButtons(
+    to,
+    'האם יש בידיך את מספר ההזמנה? 📄 ניתן למצוא אותו במייל אישור ההזמנה ששלחנו לאחר הרכישה.',
+    [
+      { id: 'HAS_ORDER_YES', title: 'כן, יש לי' },
+      { id: 'HAS_ORDER_NO',  title: 'לא, אין לי' }
+    ]
+  );
+  setStep(to, 'ASK_HAVE_ORDER');
+}
+
+// *** חדש: הסבר כשהלקוח ללא מספר הזמנה ***
+async function flowNoOrderIdInfo(to) {
+  await sendText(
+    to,
+`ℹ️ כדי לקבל מספר מעקב יש להצטייד תחילה **במספר ההזמנה**.
+תוכל/י למצוא אותו בקלות במייל אישור ההזמנה שקיבלת לאחר הרכישה מאתר טבע ובריאות.
+ברגע שמספר ההזמנה בהישג יד — אשמח לבדוק עבורך את סטטוס המשלוח. 🌿`
+  );
+  await askBackToMain(to);
+}
+
 async function flowHours(to) {
   await sendText(to,
 `🕒 שעות פעילות:
@@ -212,6 +230,7 @@ async function flowShipping(to) {
 }
 
 async function flowNoTracking(to) {
+  // הישן נשאר לשימוש עתידי, אבל מהכפתור נשלח כעת ל-flowAskHaveOrderId
   await sendText(to,
 `לצורך בדיקת מעקב המשלוח דרוש מספר ההזמנה 📦
 אנא בדוק/י את מייל אישור ההזמנה מהאתר והזן/י אותו כאן מחדש.`);
@@ -339,13 +358,20 @@ async function handleWebhook(body) {
       case 'ORDER'        : return flowOrder(from);
       case 'HOURS'        : return flowHours(from);
       case 'MORE'         : return menuMore(from);
+
       case 'SHIPPING'     : return flowShipping(from);
-      case 'NO_TRACKING'  : return flowNoTracking(from);
+      case 'NO_TRACKING'  : return flowAskHaveOrderId(from); // ←← חדש: שאלה אם יש מספר הזמנה
       case 'CONSULT'      : return flowConsultStart(from);
+
       case 'HAS_TRACK_YES': return flowAskTracking(from);
-      case 'HAS_TRACK_NO' : return flowAskOrderId(from);
+      case 'HAS_TRACK_NO' : return flowAskHaveOrderId(from); // אפשר גם לשלוח ישר להסבר – השארתי לשיקולך
+
+      case 'HAS_ORDER_YES': return flowAskOrderId(from);      // ←← חדש
+      case 'HAS_ORDER_NO' : return flowNoOrderIdInfo(from);   // ←← חדש
+
       case 'BACK_MAIN_YES': return menuMain(from);
       case 'BACK_MAIN_NO' : return msgThanks(from);
+
       default             : return menuMain(from);
     }
   }
@@ -431,6 +457,11 @@ ${url}
       if (!ok) await sendText(from, 'הערה: לא הצלחנו לאשר את קליטת הפנייה במערכת, נטפל בזה ידנית אם יידרש.');
       await askBackToMain(from);
       return;
+    }
+
+    case 'ASK_HAVE_ORDER': {
+      // אם המשתמש כתב טקסט במקום ללחוץ – ננסה להפנות להסבר
+      return await flowNoOrderIdInfo(from);
     }
 
     case 'ASK_BACK': {
