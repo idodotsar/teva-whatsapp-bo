@@ -13,6 +13,8 @@ const PHONE = process.env.PHONE_NUMBER_ID;
 const VERIFY= process.env.VERIFY_TOKEN || 'teva_verify_me';
 const PORT  = process.env.PORT || 3000;
 const LEAD_TOKEN = process.env.TEVA_LEAD_TOKEN || '';
+const LOOKUP_TOKEN = process.env.TEVA_LOOKUP_TOKEN || process.env.TEVA_LEAD_TOKEN || '';
+
 
 // ====== HELPERS ======
 const HDRS = () => ({
@@ -210,25 +212,42 @@ async function flowConsultStart(to) {
 
 // ====== API CALLS ======
 async function lookupTrackingByOrder(orderId) {
+  const url = 'https://teva-briut.co.il/wp-json/teva/v1/lookup-tracking';
   try {
-    const resp = await fetch('https://teva-briut.co.il/wp-json/teva/v1/lookup-tracking', {
+    const resp = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ order_id: orderId })
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'TevaWhatsAppBot/1.0 (+render)'
+      },
+      body: JSON.stringify({ order_id: String(orderId), token: LOOKUP_TOKEN }),
+      signal: AbortSignal.timeout(10000)
     });
-    if (!resp.ok) return null;
-    const data = await resp.json();
+
+    const text = await resp.text();
+    if (!resp.ok) {
+      console.error('lookupTrackingByOrder HTTP', resp.status, text);
+      return null;
+    }
+
+    let data;
+    try { data = JSON.parse(text); }
+    catch(e){ console.error('lookup JSON parse error:', text); return null; }
+
+    // מחזירים במבנה שהקוד למעלה מצפה לו
     return {
-      first_name: data.billing_first_name || '',
+      first_name: data.billing_first_name || data.greeting_first_name || '',
       tracking_number: data.tracking_number || '',
-      tracking_url:
-        data.tracking_url ||
+      tracking_url: data.tracking_url ||
         (data.tracking_number ? `https://status.ydm.co.il/?shipment_id=${data.tracking_number}` : '')
     };
-  } catch {
+  } catch (e) {
+    console.error('lookupTrackingByOrder error:', e);
     return null;
   }
 }
+
 
 async function submitLead(name, phone, topic) {
   try {
