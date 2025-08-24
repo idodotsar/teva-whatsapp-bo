@@ -6,6 +6,12 @@ const express = require('express');
 const app = express();
 app.use(express.json());
 
+// לוג בסיסי לכל בקשה נכנסת (יעזור לראות POST /webhook)
+app.use((req, res, next) => {
+  console.log(new Date().toISOString(), req.method, req.path);
+  next();
+});
+
 // --- Health & Home ---
 app.get('/', (req, res) => res.status(200).send('Teva WhatsApp bot - alive'));
 app.get('/healthz', (req, res) => {
@@ -38,7 +44,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function sendText(to, body, preview = true) {
   try {
-    await fetch(`${API}${PHONE}/messages`, {
+    const resp = await fetch(`${API}${PHONE}/messages`, {
       method: 'POST',
       headers: HDRS(),
       body: JSON.stringify({
@@ -48,6 +54,12 @@ async function sendText(to, body, preview = true) {
         text: { body, preview_url: preview }
       })
     });
+    const txt = await resp.text();
+    if (!resp.ok) {
+      console.error('sendText FAIL', resp.status, txt);
+    } else {
+      console.log('sendText OK', to, body.slice(0, 40).replace(/\n/g,' ') + (body.length>40?'...':''));
+    }
   } catch (e) {
     console.error('sendText error:', e);
   }
@@ -55,7 +67,7 @@ async function sendText(to, body, preview = true) {
 
 async function sendButtons(to, text, buttons) {
   try {
-    await fetch(`${API}${PHONE}/messages`, {
+    const resp = await fetch(`${API}${PHONE}/messages`, {
       method: 'POST',
       headers: HDRS(),
       body: JSON.stringify({
@@ -74,6 +86,12 @@ async function sendButtons(to, text, buttons) {
         }
       })
     });
+    const txt = await resp.text();
+    if (!resp.ok) {
+      console.error('sendButtons FAIL', resp.status, txt);
+    } else {
+      console.log('sendButtons OK', to, buttons.map(b=>b.title).join('|'));
+    }
   } catch (e) {
     console.error('sendButtons error:', e);
   }
@@ -292,36 +310,47 @@ async function handleWebhook(body) {
 
   // רק הודעות נכנסות (messages), מתעלמים מ-statuses וכו'
   const msg = value?.messages?.[0];
-  if (!msg) return;
+  if (!msg) {
+    console.log('INCOMING: no message in payload');
+    return;
+  }
+
+  // לוג הודעה נכנסת
+  console.log('INCOMING', {
+    id: msg.id,
+    from: msg.from,
+    type: msg.type,
+    text: msg.text?.body,
+    button: msg.interactive?.button_reply?.id,
+    list: msg.interactive?.list_reply?.id
+  });
 
   if (seen(msg.id)) return; // דה־דופליקציה
 
   const from = msg.from;
   const step = getStep(from);
 
-  // אינטראקטיביים (כפתורים/ליסט)
+  // 1) כפתורים אינטראקטיביים
   if (msg.type === 'interactive') {
-    const id = msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id;
+    const id =
+      msg.interactive?.button_reply?.id ||
+      msg.interactive?.list_reply?.id;
     switch (id) {
       case 'ORDER'        : return flowOrder(from);
       case 'HOURS'        : return flowHours(from);
       case 'MORE'         : return menuMore(from);
-
       case 'SHIPPING'     : return flowShipping(from);
       case 'NO_TRACKING'  : return flowNoTracking(from);
       case 'CONSULT'      : return flowConsultStart(from);
-
       case 'HAS_TRACK_YES': return flowAskTracking(from);
       case 'HAS_TRACK_NO' : return flowAskOrderId(from);
-
       case 'BACK_MAIN_YES': return menuMain(from);
       case 'BACK_MAIN_NO' : return msgThanks(from);
-
-      default: return menuMain(from);
+      default             : return menuMain(from);
     }
   }
 
-  // טקסט חופשי
+  // 2) טקסט חופשי
   const text = (msg.text?.body || '').trim();
 
   switch (step) {
