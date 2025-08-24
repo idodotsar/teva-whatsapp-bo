@@ -27,6 +27,7 @@ const PORT   = process.env.PORT || 3000;
 
 const LEAD_TOKEN   = process.env.TEVA_LEAD_TOKEN || '';
 const LOOKUP_TOKEN = process.env.TEVA_LOOKUP_TOKEN || process.env.TEVA_LEAD_TOKEN || '';
+const WA_TEMPLATE  = process.env.WA_TEMPLATE || 'welcome_he'; // שם תבנית Utility עם {{1}} לשם
 
 // sanity logs
 console.log('[ENV] PHONE:', PHONE ? 'OK' : 'MISSING');
@@ -34,6 +35,7 @@ console.log('[ENV] TOKEN:', TOKEN ? 'OK' : 'MISSING');
 console.log('[ENV] VERIFY:', VERIFY);
 console.log('[ENV] LOOKUP_TOKEN:', LOOKUP_TOKEN ? 'OK' : 'MISSING');
 console.log('[ENV] LEAD_TOKEN:', LEAD_TOKEN ? 'OK' : 'MISSING');
+console.log('[ENV] WA_TEMPLATE:', WA_TEMPLATE);
 
 // ====== HELPERS ======
 const HDRS = () => ({
@@ -230,7 +232,6 @@ async function flowShipping(to) {
 }
 
 async function flowNoTracking(to) {
-  // הישן נשאר לשימוש עתידי, אבל מהכפתור נשלח כעת ל-flowAskHaveOrderId
   await sendText(to,
 `לצורך בדיקת מעקב המשלוח דרוש מספר ההזמנה 📦
 אנא בדוק/י את מייל אישור ההזמנה מהאתר והזן/י אותו כאן מחדש.`);
@@ -360,11 +361,11 @@ async function handleWebhook(body) {
       case 'MORE'         : return menuMore(from);
 
       case 'SHIPPING'     : return flowShipping(from);
-      case 'NO_TRACKING'  : return flowAskHaveOrderId(from); // ←← חדש: שאלה אם יש מספר הזמנה
+      case 'NO_TRACKING'  : return flowAskHaveOrderId(from); // ←← חדש
       case 'CONSULT'      : return flowConsultStart(from);
 
       case 'HAS_TRACK_YES': return flowAskTracking(from);
-      case 'HAS_TRACK_NO' : return flowAskHaveOrderId(from); // אפשר גם לשלוח ישר להסבר – השארתי לשיקולך
+      case 'HAS_TRACK_NO' : return flowAskHaveOrderId(from);
 
       case 'HAS_ORDER_YES': return flowAskOrderId(from);      // ←← חדש
       case 'HAS_ORDER_NO' : return flowNoOrderIdInfo(from);   // ←← חדש
@@ -475,6 +476,85 @@ ${url}
     }
   }
 }
+
+// ====== CTA לאתר: עמוד + שליחת תבנית ======
+
+// עמוד CTA קטן עם טופס (שם + נייד) וכפתור לפתיחת וואטסאפ
+app.get('/cta', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.end(`<!doctype html><html lang="he" dir="rtl">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>צ'אט בוואטסאפ</title>
+  <div style="max-width:420px;margin:8vh auto;font-family:system-ui,Arial">
+    <h2>נדבר בוואטסאפ?</h2>
+    <p>מלא/י שם ונייד ונשלח אליך הודעת פתיחה.</p>
+    <form id="f" style="display:grid;gap:10px">
+      <label>שם<input name="name" required style="width:100%;padding:.6rem;border:1px solid #ccc;border-radius:8px"></label>
+      <label>נייד (05XXXXXXXX)<input name="phone" required pattern="05\\d{8}" placeholder="05XXXXXXXX"
+        style="width:100%;padding:.6rem;border:1px solid #ccc;border-radius:8px"></label>
+      <button style="background:#25D366;color:#fff;border:0;padding:.7rem;border-radius:10px;cursor:pointer">שלחו לי</button>
+    </form>
+    <div id="msg" style="margin-top:12px"></div>
+  </div>
+  <script>
+    const f = document.getElementById('f'), msg=document.getElementById('msg');
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(f);
+      const name = (fd.get('name')||'').trim();
+      const phone = (fd.get('phone')||'').trim();
+      if(!/^05\\d{8}$/.test(phone)) { alert('מספר לא תקין'); return; }
+      const to = '972'+phone.slice(1);
+      msg.textContent = 'שולחים...';
+      const r = await fetch('/start-whatsapp', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ to, name })
+      });
+      if(r.ok){
+        const waLink = 'https://wa.me/'+to+'?text='+encodeURIComponent('שלום, כתבתי עכשיו 🙂');
+        msg.innerHTML = '<span style="color:#1a7f37">נשלח! עכשיו אפשר לפתוח את וואטסאפ:</span><br><br>'
+          + '<a href="'+waLink+'" style="display:inline-block;background:#25D366;color:#fff;padding:.6rem 1rem;border-radius:10px;text-decoration:none">פתח WhatsApp</a>';
+        f.reset();
+      }else{
+        msg.innerHTML = '<span style="color:#b00020">שגיאה בשליחה. נסו שוב.</span>';
+      }
+    };
+  </script>
+  </html>`);
+});
+
+// נקודת API ששולחת תבנית Utility ללקוח (תבנית עם {{1}} לשם)
+app.post('/start-whatsapp', async (req, res) => {
+  try {
+    const { to, name } = req.body || {};
+    if (!/^9725\d{8}$/.test(to)) return res.status(400).send('bad phone');
+    const safeName = String(name||'לקוח/ה').slice(0,40);
+
+    const resp = await fetch(`${API}${PHONE}/messages`, {
+      method:'POST',
+      headers: HDRS(),
+      body: JSON.stringify({
+        messaging_product:'whatsapp',
+        to,
+        type:'template',
+        template:{
+          name: WA_TEMPLATE,
+          language:{ code:'he' },
+          components:[{ type:'body', parameters:[{ type:'text', text:safeName }] }]
+        }
+      })
+    });
+    const text = await resp.text();
+    if(!resp.ok){
+      console.error('send template fail', resp.status, text);
+      return res.status(500).send('fail');
+    }
+    res.sendStatus(200);
+  } catch(e){
+    console.error('start-whatsapp error', e);
+    res.status(500).send('fail');
+  }
+});
 
 // ====== START ======
 app.listen(PORT, () => console.log(`Bot running on http://localhost:${PORT}`));
